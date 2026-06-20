@@ -1,0 +1,39 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies (without lockfile)
+        run: npm install --no-package-lock
+
+      - name: Create environment file
+        run: |
+          echo "VITE_OPENROUTER_API_KEY=test_key" > .env
+          echo "VITE_ASSEMBLYAI_API_KEY=test_key" >> .env
+          echo "VITE_NEWSDATA_API_KEY=test_key" >> .env
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 1
