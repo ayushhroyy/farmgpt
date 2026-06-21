@@ -44,6 +44,7 @@ import {
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import { getOpenRouterApiKey, TEXT_MODEL } from "@/integrations/ai/config";
+import { getRainfallForecast } from "@/integrations/weather";
 
 interface ReportsProps {
   language: SupportedLanguage;
@@ -57,6 +58,7 @@ interface ReportsProps {
 
 // Define types for our form data
 interface FarmData {
+  location: string;
   cropTypes: string[];
   soilType: string;
   farmSize?: string;
@@ -233,6 +235,7 @@ const Reports: React.FC<ReportsProps> = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [hasGeneratedReport, setHasGeneratedReport] = useState(false);
   const [farmData, setFarmData] = useState<FarmData>({
+    location: "",
     cropTypes: [],
     soilType: "",
     farmSize: "",
@@ -734,8 +737,12 @@ const Reports: React.FC<ReportsProps> = ({
     return {
       rainfallPrediction:
         normalizedLanguage === "en"
-          ? "Location not provided; use local IMD/KVK forecast before irrigation planning"
-          : "स्थान नहीं दिया गया; सिंचाई योजना से पहले स्थानीय IMD/KVK पूर्वानुमान देखें",
+          ? data.location
+            ? "Rainfall forecast unavailable right now; check local IMD/KVK forecast before irrigation planning"
+            : "Location not provided; enter village/city and state to fetch rainfall forecast"
+          : data.location
+            ? "बारिश का पूर्वानुमान अभी उपलब्ध नहीं है; सिंचाई योजना से पहले स्थानीय IMD/KVK पूर्वानुमान देखें"
+            : "स्थान नहीं दिया गया; बारिश का पूर्वानुमान लाने के लिए गांव/शहर और राज्य भरें",
       waterAvailability:
         normalizedLanguage === "en"
           ? hasWaterChallenge
@@ -763,6 +770,32 @@ const Reports: React.FC<ReportsProps> = ({
     };
   };
 
+  const getRainfallPredictionForReport = async (
+    location: string,
+  ): Promise<string | null> => {
+    const trimmedLocation = location.trim();
+    if (!trimmedLocation) {
+      return null;
+    }
+
+    const forecast = await getRainfallForecast(trimmedLocation);
+    if (forecast.error) {
+      return null;
+    }
+
+    const rainyDays = forecast.daily.filter((day) => day.rainfall_mm > 0);
+    const maxRainDay = forecast.daily.reduce(
+      (max, day) => (day.rainfall_mm > max.rainfall_mm ? day : max),
+      forecast.daily[0],
+    );
+
+    if (normalizedLanguage === "hi") {
+      return `अगले 7 दिनों में ${trimmedLocation} के लिए कुल ${forecast.total.toFixed(1)} mm बारिश का अनुमान है। ${rainyDays.length} दिन बारिश दिख रही है। सबसे ज्यादा ${maxRainDay.rainfall_mm.toFixed(1)} mm ${maxRainDay.date} को दिख रही है।`;
+    }
+
+    return `Open-Meteo forecast for ${trimmedLocation}: ${forecast.total.toFixed(1)} mm rain expected over the next 7 days across ${rainyDays.length} rainy day${rainyDays.length === 1 ? "" : "s"}. Highest daily rain: ${maxRainDay.rainfall_mm.toFixed(1)} mm on ${maxRainDay.date}.`;
+  };
+
   // Function to query OpenRouter for real crop recommendations
   const queryOpenRouter = async (
     queryData: FarmData,
@@ -775,6 +808,7 @@ const Reports: React.FC<ReportsProps> = ({
         Use ONLY the provided user inputs. Do not invent a village, district, rainfall amount, soil test value, water source, or crop that the user did not provide.
 
         User inputs:
+        - Location: ${queryData.location || "Not specified"}
         - Current crops: ${queryData.cropTypes.join(", ") || "Not specified"}
         - Soil type: ${queryData.soilType || "Not specified"}
         - Farm size: ${queryData.farmSize || "Not specified"} hectares
@@ -784,7 +818,7 @@ const Reports: React.FC<ReportsProps> = ({
         - Major challenges: ${queryData.majorChallenges || "Not specified"}
 
         Return JSON only. No markdown. No explanatory text outside JSON.
-        The values must directly reflect the user inputs. If location is missing, rainfallPrediction must say that rainfall cannot be estimated without location and should recommend checking local IMD/KVK forecast.
+        The values must directly reflect the user inputs. If location is missing, rainfallPrediction must say that rainfall cannot be estimated without location. If location is present but no weather data is provided, keep rainfallPrediction cautious and do not invent an exact amount.
 
         JSON structure:
         {
@@ -915,6 +949,10 @@ const Reports: React.FC<ReportsProps> = ({
     setIsGenerating(true);
 
     try {
+      const rainfallPrediction = await getRainfallPredictionForReport(
+        farmData.location,
+      );
+
       // Get real recommendations from OpenRouter
       let openrouterPredictions: PredictionData | null = null;
 
@@ -930,12 +968,17 @@ const Reports: React.FC<ReportsProps> = ({
       }
 
       if (openrouterPredictions) {
+        const finalPredictions = {
+          ...openrouterPredictions,
+          rainfallPrediction:
+            rainfallPrediction || openrouterPredictions.rainfallPrediction,
+        };
         // Update with real data from OpenRouter
-        setPredictions(openrouterPredictions);
+        setPredictions(finalPredictions);
         setWaterData(
           buildWaterDataFromFarm(
             farmData,
-            parseInt(openrouterPredictions.potentialWaterSavings),
+            parseInt(finalPredictions.potentialWaterSavings),
           ),
         );
         setHasGeneratedReport(true);
@@ -946,7 +989,12 @@ const Reports: React.FC<ReportsProps> = ({
             : "FarmGPT AI के साथ रिपोर्ट सफलतापूर्वक जनरेट की गई!",
         );
       } else {
-        const fallbackPredictions = buildDeterministicPredictions(farmData);
+        const deterministicPredictions = buildDeterministicPredictions(farmData);
+        const fallbackPredictions = {
+          ...deterministicPredictions,
+          rainfallPrediction:
+            rainfallPrediction || deterministicPredictions.rainfallPrediction,
+        };
 
         setPredictions(fallbackPredictions);
         setWaterData(
@@ -1065,6 +1113,7 @@ const Reports: React.FC<ReportsProps> = ({
           id: Date.now().toString(),
           date: new Date().toISOString(),
           filename: filename,
+          location: farmData.location,
           crops: farmData.cropTypes.join(", "),
           soilType: farmData.soilType,
           farmSize: farmData.farmSize,
@@ -1324,6 +1373,9 @@ const Reports: React.FC<ReportsProps> = ({
         if (analysis.formData.soilType && !updates.soilType) {
           updates.soilType = analysis.formData.soilType;
         }
+        if (analysis.formData.location && !updates.location) {
+          updates.location = analysis.formData.location;
+        }
       }
     }
 
@@ -1345,6 +1397,25 @@ const Reports: React.FC<ReportsProps> = ({
               <CardTitle>{activeContent.formTitle}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              <VoiceInputField
+                id="location"
+                value={farmData.location}
+                onChange={(value) =>
+                  setFarmData({ ...farmData, location: value })
+                }
+                label={
+                  normalizedLanguage === "en"
+                    ? "Location (village/city, state)"
+                    : "स्थान (गांव/शहर, राज्य)"
+                }
+                placeholder={
+                  normalizedLanguage === "en"
+                    ? "Example: Nashik, Maharashtra"
+                    : "उदाहरण: नासिक, महाराष्ट्र"
+                }
+                language={normalizedLanguage}
+              />
+
               <VoiceInputField
                 id="crops"
                 value={farmData.cropTypes.join(", ")}
@@ -1707,6 +1778,14 @@ const Reports: React.FC<ReportsProps> = ({
                     {activeContent.farmDetails}
                   </h3>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {farmData.location && (
+                      <div className="border rounded p-3">
+                        <p className="text-sm text-muted-foreground">
+                          {normalizedLanguage === "en" ? "Location" : "स्थान"}
+                        </p>
+                        <p className="font-medium">{farmData.location}</p>
+                      </div>
+                    )}
                     <div className="border rounded p-3">
                       <p className="text-sm text-muted-foreground">
                         {activeContent.cropTypes}
