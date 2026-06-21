@@ -6,6 +6,7 @@ import { Loader2, Send, Volume2, VolumeX, Sparkles, HelpCircle, Mic } from 'luci
 import { toast } from 'sonner';
 import { processVoiceQuery } from '@/integrations/cohere';
 import { initSpeechRecognition } from '@/integrations/speech/speech-recognition';
+import { playTTS, stopTTS } from '@/integrations/speech';
 import { SupportedLanguage } from '@/App';
 
 interface AiAdviceWidgetProps {
@@ -22,7 +23,6 @@ const AiAdviceWidget: React.FC<AiAdviceWidgetProps> = ({ language }) => {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [microphoneAvailable, setMicrophoneAvailable] = useState(true);
   const [showSampleQuestions, setShowSampleQuestions] = useState(true);
-  const speechSynthesisRef = useRef<SpeechSynthesisUtterance | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Sample questions based on language
@@ -57,9 +57,7 @@ const AiAdviceWidget: React.FC<AiAdviceWidgetProps> = ({ language }) => {
   // Cleanup speech synthesis when component unmounts
   useEffect(() => {
     return () => {
-      if (speechSynthesis && speechSynthesisRef.current) {
-        speechSynthesis.cancel();
-      }
+      stopTTS();
     };
   }, []);
 
@@ -83,10 +81,8 @@ const AiAdviceWidget: React.FC<AiAdviceWidgetProps> = ({ language }) => {
     }
     
     // Stop any ongoing speech
-    if (speechSynthesis && isSpeaking) {
-      speechSynthesis.cancel();
-      setIsSpeaking(false);
-    }
+    stopTTS();
+    setIsSpeaking(false);
     
     setIsLoading(true);
     
@@ -117,51 +113,30 @@ const AiAdviceWidget: React.FC<AiAdviceWidgetProps> = ({ language }) => {
   };
 
   // Text-to-speech function to speak advice
-  const speakText = (text: string) => {
-    if (!('speechSynthesis' in window)) {
-      toast.error(
-        normalizedLanguage === 'en'
-          ? 'Text-to-speech is not supported in your browser.'
-          : 'टेक्स्ट-टू-स्पीच आपके ब्राउज़र में समर्थित नहीं है।'
-      );
-      return;
-    }
-    
-    // Cancel any ongoing speech
-    if (speechSynthesis) {
-      speechSynthesis.cancel();
-    }
-    
-    const utterance = new SpeechSynthesisUtterance(text);
-    speechSynthesisRef.current = utterance;
-    
-    // Set language
-    utterance.lang = normalizedLanguage === 'en' ? 'en-US' : 'hi-IN';
-    
-    // Handle speech events
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => {
+  const speakText = async (text: string) => {
+    setIsSpeaking(true);
+
+    try {
+      await playTTS(text, normalizedLanguage);
+    } catch (error) {
+      console.error('Error playing voice response:', error);
       setIsSpeaking(false);
       toast.error(
         normalizedLanguage === 'en'
           ? 'Error playing voice response.'
           : 'आवाज़ प्रतिक्रिया चलाने में त्रुटि।'
       );
-    };
-    
-    // Speak the text
-    speechSynthesis.speak(utterance);
+      return;
+    }
+
+    setIsSpeaking(false);
   };
 
   // Toggle speaking the advice
   const toggleSpeaking = () => {
     if (isSpeaking) {
-      // Stop speaking
-      if (speechSynthesis) {
-        speechSynthesis.cancel();
-        setIsSpeaking(false);
-      }
+      stopTTS();
+      setIsSpeaking(false);
     } else if (advice) {
       // Speak advice
       speakText(advice);

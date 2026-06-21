@@ -6,6 +6,7 @@ import { Loader2, Save, RotateCw, Volume2, VolumeX, Mic, Droplets } from 'lucide
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 import { analyzeWaterUsage } from '@/integrations/cohere';
+import { playTTS, stopTTS } from '@/integrations/speech';
 import AiAdviceWidget from '@/components/AiAdviceWidget';
 import RainfallForecastWidget from '@/components/RainfallForecastWidget';
 import WaterUsageChart from '@/components/WaterUsageChart';
@@ -28,7 +29,6 @@ const Calculator: React.FC<CalculatorProps> = ({ language }) => {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [analysisAudio, setAnalysisAudio] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const speechSynthesisRef = useRef<SpeechSynthesisUtterance | null>(null);
   const navigate = useNavigate();
 
   const content = {
@@ -161,51 +161,30 @@ const Calculator: React.FC<CalculatorProps> = ({ language }) => {
   };
 
   // Text-to-speech function to speak analysis results
-  const speakText = (text: string) => {
-    if (!('speechSynthesis' in window)) {
-      toast.error(
-        language === 'en'
-          ? 'Text-to-speech is not supported in your browser.'
-          : 'टेक्स्ट-टू-स्पीच आपके ब्राउज़र में समर्थित नहीं है।'
-      );
-      return;
-    }
-    
-    // Cancel any ongoing speech
-    if (speechSynthesis) {
-      speechSynthesis.cancel();
-    }
-    
-    const utterance = new SpeechSynthesisUtterance(text);
-    speechSynthesisRef.current = utterance;
-    
-    // Set language
-    utterance.lang = language === 'en' ? 'en-US' : 'hi-IN';
-    
-    // Handle speech events
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => {
+  const speakText = async (text: string) => {
+    setIsSpeaking(true);
+
+    try {
+      await playTTS(text, language);
+    } catch (error) {
+      console.error('Error playing voice response:', error);
       setIsSpeaking(false);
       toast.error(
         language === 'en'
           ? 'Error playing voice response.'
           : 'आवाज़ प्रतिक्रिया चलाने में त्रुटि।'
       );
-    };
-    
-    // Speak the text
-    speechSynthesis.speak(utterance);
+      return;
+    }
+
+    setIsSpeaking(false);
   };
 
   // Toggle speaking the analysis results
   const toggleSpeaking = () => {
     if (isSpeaking) {
-      // Stop speaking
-      if (speechSynthesis) {
-        speechSynthesis.cancel();
-        setIsSpeaking(false);
-      }
+      stopTTS();
+      setIsSpeaking(false);
     } else if (analysisAudio) {
       // Speak analysis audio
       speakText(analysisAudio);
@@ -214,10 +193,8 @@ const Calculator: React.FC<CalculatorProps> = ({ language }) => {
 
   const handleReset = () => {
     // Stop any ongoing speech
-    if (speechSynthesis && isSpeaking) {
-      speechSynthesis.cancel();
-      setIsSpeaking(false);
-    }
+    stopTTS();
+    setIsSpeaking(false);
     
     setConversations([]);
     setCurrentQuestion(content[language].initialQuestions[0]);

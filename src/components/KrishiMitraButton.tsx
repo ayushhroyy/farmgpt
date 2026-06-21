@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogClose } from '@
 import { Card } from '@/components/ui/card';
 import './KrishiMitraAI.css';
 import { initSpeechRecognition, isSpeechRecognitionAvailable } from '@/integrations/speech/speech-recognition';
+import { playTTS, stopTTS } from '@/integrations/speech';
 import { Input } from '@/components/ui/input';
 import { SupportedLanguage } from '@/App';
 
@@ -116,7 +117,6 @@ const KrishiMitraButton: React.FC<KrishiMitraButtonProps> = ({
   const [showSuggestions, setShowSuggestions] = useState<boolean>(true);
 
   // Refs
-  const speechSynthesisRef = useRef<SpeechSynthesisUtterance | null>(null);
   const conversationContainerRef = useRef<HTMLDivElement>(null);
   const speechRecognitionRef = useRef<any>(null);
 
@@ -302,9 +302,7 @@ const KrishiMitraButton: React.FC<KrishiMitraButtonProps> = ({
   // Cleanup speech synthesis when component unmounts
   useEffect(() => {
     return () => {
-      if (window.speechSynthesis && speechSynthesisRef.current) {
-        window.speechSynthesis.cancel();
-      }
+      stopTTS();
     };
   }, []);
 
@@ -316,62 +314,35 @@ const KrishiMitraButton: React.FC<KrishiMitraButtonProps> = ({
   }, [conversation]);
 
   // Text-to-speech function
-  const speakText = (text: string) => {
-    if (!('speechSynthesis' in window)) {
-      toast.error(
-        normalizedLanguage === 'en'
-          ? 'Text-to-speech is not supported in your browser.'
-          : 'टेक्स्ट-टू-स्पीच आपके ब्राउज़र में समर्थित नहीं है।'
-      );
-      return;
-    }
-    
-    // Cancel any ongoing speech
-    if (window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
-    
-    const utterance = new SpeechSynthesisUtterance(text);
-    speechSynthesisRef.current = utterance;
-    
-    // Set language
-    utterance.lang = normalizedLanguage === 'en' ? 'en-US' : 'hi-IN';
-    
-    // Handle speech events
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => {
+  const speakText = async (text: string) => {
+    setIsSpeaking(true);
+
+    try {
+      await playTTS(text, normalizedLanguage);
       setIsSpeaking(false);
-      
-      // Only automatically start listening after speaking ends if there has been user interaction
-      // and if this isn't the initial greeting
+
       if (dialogOpen && microphoneAvailable && !isProcessing && conversation.length > 1) {
         setTimeout(() => {
           handleVoiceInput();
           setIsListeningAfterSpeak(true);
-        }, 500); // Small delay for better user experience
+        }, 500);
       }
-    };
-    utterance.onerror = () => {
+    } catch (error) {
+      console.error('Error playing voice response:', error);
       setIsSpeaking(false);
       toast.error(
         normalizedLanguage === 'en'
           ? 'Error playing voice response.'
           : 'आवाज़ प्रतिक्रिया चलाने में त्रुटि।'
       );
-    };
-    
-    // Speak the text
-    window.speechSynthesis.speak(utterance);
+    }
   };
 
   // Toggle speaking the advice
   const toggleSpeaking = () => {
     if (isSpeaking) {
-      // Stop speaking
-      if (window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-        setIsSpeaking(false);
-      }
+      stopTTS();
+      setIsSpeaking(false);
     } else {
       // Find the last assistant message to speak
       const lastAssistantMessage = [...conversation]
@@ -386,11 +357,8 @@ const KrishiMitraButton: React.FC<KrishiMitraButtonProps> = ({
 
   // Clear conversation
   const clearConversation = () => {
-    // Stop any ongoing speech
-    if (window.speechSynthesis && isSpeaking) {
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
-    }
+    stopTTS();
+    setIsSpeaking(false);
     
     // Reset conversation to initial greeting
     setConversation([
@@ -417,10 +385,8 @@ const KrishiMitraButton: React.FC<KrishiMitraButtonProps> = ({
     // If dialog is being closed
     if (!open) {
       // Clean up resources
-      if (speechSynthesisRef.current) {
-        window.speechSynthesis.cancel();
-        setIsSpeaking(false);
-      }
+      stopTTS();
+      setIsSpeaking(false);
       
       // Stop all animations to prevent duplicate elements 
       cancelAnimationFrame(animationFrameRef.current || 0);
@@ -506,11 +472,8 @@ const KrishiMitraButton: React.FC<KrishiMitraButtonProps> = ({
       return;
     }
     
-    // Cancel any ongoing speech
-    if (window.speechSynthesis && isSpeaking) {
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
-    }
+    stopTTS();
+    setIsSpeaking(false);
     
     setHasError(false);
     setErrorMessage('');

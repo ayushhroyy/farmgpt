@@ -1,6 +1,5 @@
 /**
- * Speech services using Google Translate's unofficial APIs
- * for both text-to-speech and speech recognition
+ * Speech services for text-to-speech and speech recognition.
  */
 
 import { transcribeAudioWithWebSpeech, SpeechRecognitionResult } from './speech-recognition';
@@ -12,165 +11,113 @@ export interface TranscriptionResult {
   error?: string;
 }
 
-/**
- * Play text using Google Translate's TTS service
- * @param text Text to speak
- * @param language Language code ('en' or 'hi')
- */
-export function playTTS(text: string, language: 'en' | 'hi' = 'en'): Promise<void> {
-  return new Promise((resolve, reject) => {
-    try {
-      // Clear any existing audio
-      window.speechSynthesis?.cancel();
-      
-      // Convert language code for Google Translate
-      const langCode = language === 'hi' ? 'hi' : 'en';
-      
-      // Since direct access to Google Translate TTS might have CORS issues,
-      // we'll use a more compatible approach
-      
-      // APPROACH 1: Use Web Speech API first if available (most browsers)
-      if (window.speechSynthesis) {
-        const utterance = new SpeechSynthesisUtterance(text);
-        
-        // Try to find a voice for the specified language
-        const voices = window.speechSynthesis.getVoices();
-        
-        // Filter for voices in the specified language
-        const languageVoices = voices.filter(voice => 
-          voice.lang.startsWith(langCode === 'hi' ? 'hi' : 'en')
-        );
-        
-        // Use a voice in the specified language if available
-        if (languageVoices.length > 0) {
-          utterance.voice = languageVoices[0];
-          utterance.lang = languageVoices[0].lang;
-        } else {
-          // Fallback to setting just the language
-          utterance.lang = langCode === 'hi' ? 'hi-IN' : 'en-US';
-        }
-        
-        utterance.rate = 1.0;
-        utterance.pitch = 1.0;
-        utterance.volume = 1.0;
-        
-        utterance.onend = () => {
-          resolve();
-        };
-        
-        utterance.onerror = (event) => {
-          console.error('Speech synthesis error:', event);
-          // If Web Speech API fails, fall back to approach 2
-          fallbackToAudioElement(text, langCode, resolve, reject);
-        };
-        
-        window.speechSynthesis.speak(utterance);
-        return;
-      }
-      
-      // If Web Speech API is not available, use audio element directly
-      fallbackToAudioElement(text, langCode, resolve, reject);
-      
-    } catch (error) {
-      console.error('Error in TTS playback:', error);
-      // If all else fails, try the final fallback
-      try {
-        finalFallback(text, language, resolve, reject);
-      } catch (err) {
-        reject(error);
-      }
-    }
+let currentAudio: HTMLAudioElement | null = null;
+let currentAudioUrl: string | null = null;
+
+export function stopTTS() {
+  window.speechSynthesis?.cancel();
+
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio.removeAttribute('src');
+    currentAudio.load();
+    currentAudio = null;
+  }
+
+  if (currentAudioUrl) {
+    URL.revokeObjectURL(currentAudioUrl);
+    currentAudioUrl = null;
+  }
+}
+
+async function playElevenLabsTTS(text: string, language: 'en' | 'hi'): Promise<void> {
+  const response = await fetch('/api/tts', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ text, language }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`TTS request failed with ${response.status}`);
+  }
+
+  const audioBlob = await response.blob();
+  const audio = new Audio();
+  currentAudioUrl = URL.createObjectURL(audioBlob);
+  currentAudio = audio;
+  audio.src = currentAudioUrl;
+
+  await new Promise<void>((resolve, reject) => {
+    audio.onended = () => {
+      stopTTS();
+      resolve();
+    };
+    audio.onerror = () => {
+      stopTTS();
+      reject(new Error('Audio playback failed'));
+    };
+    audio.play().catch((error) => {
+      stopTTS();
+      reject(error);
+    });
   });
 }
 
 /**
- * Fallback method using audio element with proxy
+ * Play text using ElevenLabs, falling back to browser speech synthesis.
+ * @param text Text to speak
+ * @param language Language code ('en' or 'hi')
  */
-function fallbackToAudioElement(
-  text: string, 
-  langCode: string, 
-  resolve: () => void, 
-  reject: (error: any) => void
-) {
-  try {
-    // Encode text to make it URL-safe
-    const encodedText = encodeURIComponent(text);
-    
-    // Use CORS proxy to avoid direct request issues
-    // We'll use a simple client-side approach rather than requiring a proxy server
-    // The only proxy approach that actually works in browsers consistently is using 
-    // a custom proxy server or a direct API call to a service
-    
-    // Use data URI approach - Convert text to speech on the client side
-    // This uses browser's speech synthesis API but wrapped in a way to avoid CORS
-    const audio = document.createElement('audio');
-    audio.style.display = 'none';
-    document.body.appendChild(audio);
-    
-    audio.onended = () => {
-      document.body.removeChild(audio);
-      resolve();
-    };
-    
-    audio.onerror = (error) => {
-      document.body.removeChild(audio);
-      console.error('Fallback audio playback failed:', error);
-      finalFallback(text, langCode === 'hi' ? 'hi' : 'en', resolve, reject);
-    };
-    
-    // Try loading the audio
-    // Note: This may fail due to CORS, but we're trying multiple approaches
-    try {
-      // Try AllOrigins proxy (may work in some cases)
-      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(
-        `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodedText}&tl=${langCode}&client=tw-ob`
-      )}`;
-      
-      audio.src = proxyUrl;
-      audio.play().catch(error => {
-        console.error('Proxy audio playback failed:', error);
-        document.body.removeChild(audio);
-        finalFallback(text, langCode === 'hi' ? 'hi' : 'en', resolve, reject);
-      });
-    } catch (error) {
-      document.body.removeChild(audio);
-      finalFallback(text, langCode === 'hi' ? 'hi' : 'en', resolve, reject);
-    }
-  } catch (error) {
-    console.error('Error in audio element fallback:', error);
-    finalFallback(text, langCode === 'hi' ? 'hi' : 'en', resolve, reject);
-  }
-}
+export async function playTTS(text: string, language: 'en' | 'hi' = 'en'): Promise<void> {
+  stopTTS();
 
-/**
- * Final fallback using Web Speech API without Google's voices
- */
-function finalFallback(
-  text: string, 
-  language: 'en' | 'hi', 
-  resolve: () => void, 
-  reject: (error: any) => void
-) {
-  if (!window.speechSynthesis) {
-    console.error('Speech synthesis not available');
-    reject(new Error('Speech synthesis not available'));
+  try {
+    await playElevenLabsTTS(text, language);
     return;
+  } catch (error) {
+    console.warn('ElevenLabs TTS failed, falling back to browser speech synthesis:', error);
   }
-  
-  // Use simple speech synthesis as final fallback
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = language === 'hi' ? 'hi-IN' : 'en-US';
-  
-  utterance.onend = () => {
-    resolve();
-  };
-  
-  utterance.onerror = (event) => {
-    console.error('Final fallback speech synthesis error:', event);
-    reject(event);
-  };
-  
-  window.speechSynthesis.speak(utterance);
+
+  return new Promise((resolve, reject) => {
+    try {
+      const langCode = language === 'hi' ? 'hi' : 'en';
+
+      if (window.speechSynthesis) {
+        const utterance = new SpeechSynthesisUtterance(text);
+        const voices = window.speechSynthesis.getVoices();
+        const languageVoices = voices.filter(voice => 
+          voice.lang.startsWith(langCode === 'hi' ? 'hi' : 'en')
+        );
+
+        if (languageVoices.length > 0) {
+          utterance.voice = languageVoices[0];
+          utterance.lang = languageVoices[0].lang;
+        } else {
+          utterance.lang = langCode === 'hi' ? 'hi-IN' : 'en-US';
+        }
+
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        utterance.volume = 1.0;
+
+        utterance.onend = () => resolve();
+        utterance.onerror = (event) => {
+          console.error('Speech synthesis error:', event);
+          reject(event);
+        };
+
+        window.speechSynthesis.speak(utterance);
+        return;
+      }
+
+      reject(new Error('Speech synthesis not available'));
+    } catch (error) {
+      console.error('Error in TTS playback:', error);
+      reject(error);
+    }
+  });
 }
 
 /**

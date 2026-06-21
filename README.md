@@ -75,11 +75,17 @@ VITE_ASSEMBLYAI_API_KEY=...
 VITE_NEWSDATA_API_KEY=...
 ```
 
+Add this Cloudflare Pages secret for server-side text-to-speech:
+
+```env
+elevenlabs=...
+```
+
 After saving variables, redeploy the latest commit.
 
 ## Project Notes
 
 - PDF export is generated in-browser with `html2canvas` and `jsPDF`.
-- Browser/system TTS is currently used for spoken responses in the web app.
+- ElevenLabs is used for spoken responses through the `/api/tts` Cloudflare Pages Function, with browser/system TTS as a fallback.
 - AssemblyAI is used for speech-to-text, not text-to-speech.
 - API keys exposed as `VITE_*` variables are visible in the browser. For production hardening, route provider calls through a Cloudflare Worker proxy.
