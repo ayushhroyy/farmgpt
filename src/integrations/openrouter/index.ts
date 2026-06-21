@@ -191,10 +191,26 @@ export async function analyzeWaterUsage(
   language: 'en' | 'hi'
 ): Promise<{
   recommendations: string[];
-  waterData: any;
+  waterData: Array<{ name: string; current: number; recommended: number }> | null;
   potentialSavings: string;
   audioSummary?: string;
 }> {
+  const parseWaterAmount = (value: unknown): number | null => {
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : null;
+    }
+
+    if (typeof value === 'string') {
+      const normalized = value.replace(/,/g, '').match(/-?\d+(\.\d+)?/);
+      if (normalized) {
+        const parsed = Number(normalized[0]);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+    }
+
+    return null;
+  };
+
   try {
     const conversationsText = conversations
       .map(conv => `Q: ${conv.question}\nA: ${conv.answer}`)
@@ -240,24 +256,33 @@ export async function analyzeWaterUsage(
 
       const recommendations = json.recommendations || [];
 
-      const waterData = [];
+      const waterData: Array<{ name: string; current: number; recommended: number }> = [];
       if (json.crops) {
         Object.keys(json.crops).forEach(crop => {
+          const current = parseWaterAmount(json.crops[crop]?.current);
+          const recommended = parseWaterAmount(json.crops[crop]?.recommended);
+
+          if (current === null || recommended === null) {
+            return;
+          }
+
           waterData.push({
             name: crop,
-            current: json.crops[crop].current,
-            recommended: json.crops[crop].recommended,
+            current,
+            recommended,
           });
         });
 
-        const totalCurrent = Object.values(json.crops).reduce((sum: number, crop: any) => sum + crop.current, 0);
-        const totalRecommended = Object.values(json.crops).reduce((sum: number, crop: any) => sum + crop.recommended, 0);
+        const totalCurrent = waterData.reduce((sum, crop) => sum + crop.current, 0);
+        const totalRecommended = waterData.reduce((sum, crop) => sum + crop.recommended, 0);
 
-        waterData.push({
-          name: language === 'en' ? 'Total' : 'कुल',
-          current: totalCurrent,
-          recommended: totalRecommended,
-        });
+        if (waterData.length > 0) {
+          waterData.push({
+            name: language === 'en' ? 'Total' : 'कुल',
+            current: totalCurrent,
+            recommended: totalRecommended,
+          });
+        }
       }
 
       const audioSummary = language === 'en'
@@ -373,7 +398,7 @@ export async function analyzeImage(
   description: string;
   category: string;
   issues: string[];
-  formData: any;
+  formData: Record<string, unknown>;
 }> {
   try {
     // Refresh client to get latest API key
