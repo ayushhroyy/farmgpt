@@ -44,13 +44,13 @@ const CoreChart = ({ data, language }: WaterUsageChartProps) => {
   const labels = {
     en: {
       title: "Water Usage Comparison",
-      yAxis: "Water (liters per hectare)",
+      yAxis: "Estimated daily water (liters)",
       legend1: "Current Usage",
       legend2: "Recommended Usage",
     },
     hi: {
       title: "जल उपयोग तुलना",
-      yAxis: "पानी (लीटर प्रति हेक्टेयर)",
+      yAxis: "अनुमानित दैनिक पानी (लीटर)",
       legend1: "वर्तमान उपयोग",
       legend2: "अनुशंसित उपयोग",
     },

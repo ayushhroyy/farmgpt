@@ -88,6 +88,23 @@ const parsePositiveNumber = (value?: string, fallback = 1): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const getSeasonDays = (harvestSeason?: string): number => {
+  switch (harvestSeason) {
+    case "kharif":
+      return 120;
+    case "rabi":
+      return 140;
+    case "zaid":
+      return 90;
+    case "year-round":
+      return 365;
+    case "multiple":
+      return 240;
+    default:
+      return 120;
+  }
+};
+
 // Interface for VoiceInputField props
 interface VoiceInputFieldProps {
   id: string;
@@ -579,40 +596,17 @@ const Reports: React.FC<ReportsProps> = ({
   // Update water data when crops change
   useEffect(() => {
     if (farmData.cropTypes.length > 0) {
-      const farmSize = parsePositiveNumber(farmData.farmSize, 1);
-      const cropData = farmData.cropTypes.map((crop) => {
-        const cropInfo = findCropData(crop);
-        return {
-          name: normalizedLanguage === "hi" ? cropInfo.hiName : cropInfo.enName,
-          current: Math.round(cropInfo.current * farmSize),
-          recommended: Math.round(cropInfo.recommended * farmSize),
-        };
-      });
-
-      // Add total row
-      const totalCurrent = cropData.reduce(
-        (sum, crop) => sum + crop.current,
-        0,
-      );
-      const totalRecommended = cropData.reduce(
-        (sum, crop) => sum + crop.recommended,
-        0,
-      );
-
-      const finalData = [
-        ...cropData,
-        {
-          name: normalizedLanguage === "hi" ? "कुल" : "Total",
-          current: totalCurrent,
-          recommended: totalRecommended,
-        },
-      ];
-
-      setWaterData(finalData);
+      setWaterData(buildWaterDataFromFarm(farmData));
     } else {
       setWaterData([]);
     }
-  }, [farmData.cropTypes, farmData.farmSize, normalizedLanguage]);
+  }, [
+    farmData.cropTypes,
+    farmData.farmSize,
+    farmData.harvestSeason,
+    farmData.irrigationAmount,
+    normalizedLanguage,
+  ]);
 
   // State for PDF generation
   const [generatedPdfUrl, setGeneratedPdfUrl] = useState<string | null>(null);
@@ -621,19 +615,38 @@ const Reports: React.FC<ReportsProps> = ({
 
   const buildWaterDataFromFarm = (data: FarmData, savingsPercent?: number) => {
     const farmSize = parsePositiveNumber(data.farmSize, 1);
+    const dailyIrrigation = parsePositiveNumber(data.irrigationAmount, 0);
+    const seasonDays = getSeasonDays(data.harvestSeason);
     const crops = data.cropTypes.length > 0 ? data.cropTypes : ["Mixed crops"];
+    const cropInfos = crops.map((crop) => ({
+      inputName: crop,
+      info: findCropData(crop),
+    }));
+    const modeledCurrentTotal = cropInfos.reduce(
+      (sum, crop) => sum + (crop.info.current * farmSize) / seasonDays,
+      0,
+    );
+    const enteredCurrentTotal =
+      dailyIrrigation > 0 ? dailyIrrigation : null;
 
-    const cropData = crops.map((crop) => {
-      const cropInfo = findCropData(crop);
-      const current = Math.round(cropInfo.current * farmSize);
-      const recommendedBase = Math.round(cropInfo.recommended * farmSize);
+    const cropData = cropInfos.map(({ info }) => {
+      const modeledCurrent = (info.current * farmSize) / seasonDays;
+      const current =
+        enteredCurrentTotal && modeledCurrentTotal > 0
+          ? Math.round(
+              enteredCurrentTotal * (modeledCurrent / modeledCurrentTotal),
+            )
+          : Math.round(modeledCurrent);
+      const recommendedBase = Math.round(
+        (info.recommended * farmSize) / seasonDays,
+      );
       const recommended =
         savingsPercent !== undefined
           ? Math.round(current * ((100 - savingsPercent) / 100))
           : recommendedBase;
 
       return {
-        name: normalizedLanguage === "hi" ? cropInfo.hiName : cropInfo.enName,
+        name: normalizedLanguage === "hi" ? info.hiName : info.enName,
         current,
         recommended: Math.min(recommended, current),
       };
