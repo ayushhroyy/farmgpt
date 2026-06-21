@@ -43,7 +43,7 @@ import {
 } from "@/integrations/speech/speech-recognition";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
-import { TEXT_MODEL } from "@/integrations/ai/config";
+import { getOpenRouterApiKey, TEXT_MODEL } from "@/integrations/ai/config";
 
 interface ReportsProps {
   language: SupportedLanguage;
@@ -77,8 +77,16 @@ interface PredictionData {
   irrigationRecommendation: string;
 }
 
-const OPENROUTER_API_KEY =
-  import.meta.env.VITE_OPENROUTER_API_KEY || "";
+const parseCropInput = (value: string): string[] =>
+  value
+    .split(/[,;\n]+/)
+    .map((crop) => crop.trim())
+    .filter(Boolean);
+
+const parsePositiveNumber = (value?: string, fallback = 1): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
 
 // Interface for VoiceInputField props
 interface VoiceInputFieldProps {
@@ -497,22 +505,57 @@ const Reports: React.FC<ReportsProps> = ({
       rice: "rice",
       paddy: "rice",
       dhaan: "rice",
+      "धान": "rice",
+      "चावल": "rice",
       wheat: "wheat",
       gehun: "wheat",
       kanak: "wheat",
+      "गेहूं": "wheat",
+      "गेहूँ": "wheat",
       millet: "bajra",
+      "बाजरा": "bajra",
+      "ज्वार": "jowar",
+      "रागी": "ragi",
       pulse: "chickpea",
       dal: "chickpea",
+      "दाल": "chickpea",
+      "चना": "chickpea",
+      "अरहर": "pigeonpea",
+      "मसूर": "lentil",
+      "मूंग": "greengram",
+      "उड़द": "blackgram",
       vegetable: "tomato",
+      "सब्जी": "tomato",
+      "टमाटर": "tomato",
+      "आलू": "potato",
+      "प्याज": "onion",
+      "बैंगन": "brinjal",
+      "भिंडी": "ladyfinger",
       phal: "mango",
       fal: "mango",
+      "फल": "mango",
+      "आम": "mango",
+      "केला": "banana",
+      "अमरूद": "guava",
+      "पपीता": "papaya",
       sugar: "sugarcane",
       ganna: "sugarcane",
+      "गन्ना": "sugarcane",
       kapas: "cotton",
+      "कपास": "cotton",
       mirch: "chili",
+      "मिर्च": "chili",
       haldi: "turmeric",
+      "हल्दी": "turmeric",
+      "अदरक": "ginger",
       makai: "maize",
       corn: "maize",
+      "मक्का": "maize",
+      "जौ": "barley",
+      "सरसों": "mustard",
+      "मूंगफली": "groundnut",
+      "सोयाबीन": "soybean",
+      "तिल": "sesame",
     };
 
     for (const [variant, cropKey] of Object.entries(variations)) {
@@ -536,12 +579,13 @@ const Reports: React.FC<ReportsProps> = ({
   // Update water data when crops change
   useEffect(() => {
     if (farmData.cropTypes.length > 0) {
+      const farmSize = parsePositiveNumber(farmData.farmSize, 1);
       const cropData = farmData.cropTypes.map((crop) => {
         const cropInfo = findCropData(crop);
         return {
           name: normalizedLanguage === "hi" ? cropInfo.hiName : cropInfo.enName,
-          current: cropInfo.current,
-          recommended: cropInfo.recommended,
+          current: Math.round(cropInfo.current * farmSize),
+          recommended: Math.round(cropInfo.recommended * farmSize),
         };
       });
 
@@ -565,13 +609,146 @@ const Reports: React.FC<ReportsProps> = ({
       ];
 
       setWaterData(finalData);
+    } else {
+      setWaterData([]);
     }
-  }, [farmData.cropTypes, normalizedLanguage]);
+  }, [farmData.cropTypes, farmData.farmSize, normalizedLanguage]);
 
   // State for PDF generation
   const [generatedPdfUrl, setGeneratedPdfUrl] = useState<string | null>(null);
   const [openrouterResponse, setOpenrouterResponse] = useState<string>("");
   const reportRef = useRef<HTMLDivElement>(null);
+
+  const buildWaterDataFromFarm = (data: FarmData, savingsPercent?: number) => {
+    const farmSize = parsePositiveNumber(data.farmSize, 1);
+    const crops = data.cropTypes.length > 0 ? data.cropTypes : ["Mixed crops"];
+
+    const cropData = crops.map((crop) => {
+      const cropInfo = findCropData(crop);
+      const current = Math.round(cropInfo.current * farmSize);
+      const recommendedBase = Math.round(cropInfo.recommended * farmSize);
+      const recommended =
+        savingsPercent !== undefined
+          ? Math.round(current * ((100 - savingsPercent) / 100))
+          : recommendedBase;
+
+      return {
+        name: normalizedLanguage === "hi" ? cropInfo.hiName : cropInfo.enName,
+        current,
+        recommended: Math.min(recommended, current),
+      };
+    });
+
+    const totalCurrent = cropData.reduce((sum, crop) => sum + crop.current, 0);
+    const totalRecommended = cropData.reduce(
+      (sum, crop) => sum + crop.recommended,
+      0,
+    );
+
+    return [
+      ...cropData,
+      {
+        name: normalizedLanguage === "hi" ? "कुल" : "Total",
+        current: totalCurrent,
+        recommended: totalRecommended,
+      },
+    ];
+  };
+
+  const buildDeterministicPredictions = (data: FarmData): PredictionData => {
+    const crops = data.cropTypes.map((crop) => crop.toLowerCase());
+    const cropEntries = Object.values(cropWaterDatabase);
+    const currentCropData = data.cropTypes.map(findCropData);
+    const avgWaterNeed =
+      currentCropData.length > 0
+        ? currentCropData.reduce((sum, crop) => sum + crop.current, 0) /
+          currentCropData.length
+        : 4000;
+    const irrigationAmount = parsePositiveNumber(data.irrigationAmount, 0);
+    const isHighWaterSetup =
+      avgWaterNeed > 8000 ||
+      crops.some((crop) =>
+        [
+          "rice",
+          "paddy",
+          "sugarcane",
+          "banana",
+          "cotton",
+          "धान",
+          "चावल",
+          "गन्ना",
+          "केला",
+          "कपास",
+        ].some((term) => crop.includes(term)),
+      );
+    const hasEfficientIrrigation =
+      data.majorChallenges?.toLowerCase().includes("drip") ||
+      data.majorChallenges?.toLowerCase().includes("sprinkler");
+    const hasWaterChallenge =
+      data.majorChallenges?.toLowerCase().includes("water") ||
+      data.majorChallenges?.toLowerCase().includes("drought") ||
+      data.majorChallenges?.toLowerCase().includes("scarcity") ||
+      data.majorChallenges?.includes("पानी");
+
+    const currentCropLabels = new Set(
+      data.cropTypes.map((crop) => crop.toLowerCase().trim()),
+    );
+
+    const recommendedCrops = cropEntries
+      .filter((crop) => crop.current <= 4200)
+      .map((crop) => (normalizedLanguage === "hi" ? crop.hiName : crop.enName))
+      .filter((crop) => !currentCropLabels.has(crop.toLowerCase().trim()))
+      .slice(0, 5);
+
+    const notRecommendedCrops = cropEntries
+      .filter((crop) => crop.current >= 8500)
+      .sort((a, b) => b.current - a.current)
+      .map((crop) => (normalizedLanguage === "hi" ? crop.hiName : crop.enName))
+      .slice(0, 3);
+
+    let score = 72;
+    if (isHighWaterSetup) score -= 15;
+    if (hasWaterChallenge) score -= 10;
+    if (hasEfficientIrrigation) score += 10;
+    if (data.soilType.toLowerCase().includes("sandy")) score -= 6;
+    if (data.fertilizerType === "organic" || data.fertilizerType === "mixed") {
+      score += 5;
+    }
+    score = Math.max(35, Math.min(92, score));
+
+    const savings = isHighWaterSetup ? 35 : hasWaterChallenge ? 28 : 22;
+
+    return {
+      rainfallPrediction:
+        normalizedLanguage === "en"
+          ? "Location not provided; use local IMD/KVK forecast before irrigation planning"
+          : "स्थान नहीं दिया गया; सिंचाई योजना से पहले स्थानीय IMD/KVK पूर्वानुमान देखें",
+      waterAvailability:
+        normalizedLanguage === "en"
+          ? hasWaterChallenge
+            ? "Water stress indicated from your challenges; reduce losses through scheduling and efficient irrigation"
+            : irrigationAmount > 0
+              ? `Daily irrigation entered: ${irrigationAmount} liters; compare this with crop-stage need and soil moisture`
+              : "Water availability cannot be confirmed without source/location; plan irrigation by soil moisture"
+          : hasWaterChallenge
+            ? "आपकी जानकारी से पानी की कमी दिखती है; समयबद्ध और कुशल सिंचाई अपनाएं"
+            : irrigationAmount > 0
+              ? `दैनिक सिंचाई: ${irrigationAmount} लीटर; इसे फसल अवस्था और मिट्टी की नमी से मिलाएं`
+              : "पानी की उपलब्धता स्रोत/स्थान के बिना पक्की नहीं हो सकती; मिट्टी की नमी देखकर सिंचाई करें",
+      recommendedCrops,
+      notRecommendedCrops,
+      sustainabilityScore: score,
+      potentialWaterSavings: `${savings}%`,
+      irrigationRecommendation:
+        normalizedLanguage === "en"
+          ? isHighWaterSetup
+            ? "Use drip/sprinkler where possible, mulch rows, and irrigate by crop stage instead of fixed daily watering"
+            : "Use soil-moisture checks, mulch, and morning/evening irrigation to reduce evaporation"
+          : isHighWaterSetup
+            ? "जहां संभव हो drip/sprinkler लगाएं, मल्चिंग करें, और रोज़ तय पानी देने के बजाय फसल अवस्था के हिसाब से सिंचाई करें"
+            : "मिट्टी की नमी जांचें, मल्चिंग करें, और वाष्पीकरण घटाने के लिए सुबह/शाम सिंचाई करें",
+    };
+  };
 
   // Function to query OpenRouter for real crop recommendations
   const queryOpenRouter = async (
@@ -580,26 +757,23 @@ const Reports: React.FC<ReportsProps> = ({
     try {
       // Construct the prompt for OpenRouter
       const prompt = `
-        As an agricultural expert, provide sustainable farming recommendations for a farm with the following details:
+        You are generating a water sustainability report for an Indian farm.
 
-        Current Crops: ${queryData.cropTypes.join(", ")}
-        Soil Type: ${queryData.soilType}
-        Farm Size: ${queryData.farmSize || "Not specified"} hectares
-        Daily Irrigation Amount: ${queryData.irrigationAmount || "Not specified"} liters
-        Fertilizer Type: ${queryData.fertilizerType || "Not specified"}
-        Harvest Season: ${queryData.harvestSeason || "Not specified"}
-        Major Challenges: ${queryData.majorChallenges || "Not specified"}
+        Use ONLY the provided user inputs. Do not invent a village, district, rainfall amount, soil test value, water source, or crop that the user did not provide.
 
-        Based on this comprehensive information and considering water sustainability, provide the following:
-        1. Rainfall prediction for this region (including estimated amount in mm)
-        2. Water availability outlook
-        3. List of recommended crops that are water-efficient for this farm (exactly 5 crops)
-        4. List of crops to avoid due to high water requirements (exactly 3 crops)
-        5. A sustainability score (0-100) for the current farm setup
-        6. Potential water savings percentage if recommendations are followed
-        7. Specific irrigation recommendation for better water efficiency
+        User inputs:
+        - Current crops: ${queryData.cropTypes.join(", ") || "Not specified"}
+        - Soil type: ${queryData.soilType || "Not specified"}
+        - Farm size: ${queryData.farmSize || "Not specified"} hectares
+        - Daily irrigation amount: ${queryData.irrigationAmount || "Not specified"} liters
+        - Fertilizer type: ${queryData.fertilizerType || "Not specified"}
+        - Harvest season: ${queryData.harvestSeason || "Not specified"}
+        - Major challenges: ${queryData.majorChallenges || "Not specified"}
 
-        Format your response as a JSON object with the following structure:
+        Return JSON only. No markdown. No explanatory text outside JSON.
+        The values must directly reflect the user inputs. If location is missing, rainfallPrediction must say that rainfall cannot be estimated without location and should recommend checking local IMD/KVK forecast.
+
+        JSON structure:
         {
           "rainfallPrediction": "string",
           "waterAvailability": "string",
@@ -609,18 +783,19 @@ const Reports: React.FC<ReportsProps> = ({
           "potentialWaterSavings": "string with percentage",
           "irrigationRecommendation": "string"
         }
-
-        Consider the farm size, irrigation amount, fertilizer practices, harvest season, and specific challenges in your analysis.
-        Provide recommendations tailored to these specific conditions.
-        Explain your recommendations briefly but keep the JSON structure intact.
       `;
 
       console.log("Sending prompt to OpenRouter:", prompt);
 
       // Import OpenAI client for OpenRouter
+      const apiKey = getOpenRouterApiKey();
+      if (!apiKey) {
+        return null;
+      }
+
       const OpenAI = (await import('openai')).default;
       const openrouterClient = new OpenAI({
-        apiKey: OPENROUTER_API_KEY,
+        apiKey,
         baseURL: 'https://openrouter.ai/api/v1',
         dangerouslyAllowBrowser: true
       });
@@ -664,9 +839,9 @@ const Reports: React.FC<ReportsProps> = ({
             if (
               openrouterData.rainfallPrediction &&
               openrouterData.waterAvailability &&
-              openrouterData.recommendedCrops &&
-              openrouterData.notRecommendedCrops &&
-              openrouterData.sustainabilityScore &&
+              Array.isArray(openrouterData.recommendedCrops) &&
+              Array.isArray(openrouterData.notRecommendedCrops) &&
+              typeof openrouterData.sustainabilityScore === "number" &&
               openrouterData.potentialWaterSavings &&
               openrouterData.irrigationRecommendation
             ) {
@@ -715,6 +890,15 @@ const Reports: React.FC<ReportsProps> = ({
 
   // Generate data based on location and farm inputs
   const generatePredictions = async () => {
+    if (!farmData.cropTypes.length || !farmData.soilType) {
+      toast.error(
+        normalizedLanguage === "en"
+          ? "Please enter current crops and soil type before generating the report."
+          : "रिपोर्ट बनाने से पहले वर्तमान फसलें और मिट्टी का प्रकार भरें।",
+      );
+      return;
+    }
+
     setIsGenerating(true);
 
     try {
@@ -735,6 +919,12 @@ const Reports: React.FC<ReportsProps> = ({
       if (openrouterPredictions) {
         // Update with real data from OpenRouter
         setPredictions(openrouterPredictions);
+        setWaterData(
+          buildWaterDataFromFarm(
+            farmData,
+            parseInt(openrouterPredictions.potentialWaterSavings),
+          ),
+        );
         setHasGeneratedReport(true);
 
         toast.success(
@@ -743,120 +933,15 @@ const Reports: React.FC<ReportsProps> = ({
             : "FarmGPT AI के साथ रिपोर्ट सफलतापूर्वक जनरेट की गई!",
         );
       } else {
-        // Fallback to mock data if Gemini fails
-        console.log("Using fallback data");
-
-        // Generate region-appropriate predictions based on location
-        let regionBasedRecommendations = {
-          recommendedCrops: [
-            "Sorghum",
-            "Millet",
-            "Pulses",
-            "Drought-resistant Rice",
-            "Barley",
-          ],
-          notRecommendedCrops: ["Traditional Rice", "Sugarcane", "Cotton"],
-          rainfallPrediction: `750-850mm expected annually`,
-          waterAvailability: "Moderate decline in groundwater levels expected",
-        };
-
-        // Use general recommendations since we don't have location data
-        regionBasedRecommendations.rainfallPrediction =
-          "750-850mm expected annually";
-
-        // Convert region names to Hindi if needed
-        if (normalizedLanguage === "hi") {
-          regionBasedRecommendations.recommendedCrops =
-            regionBasedRecommendations.recommendedCrops.map((crop) => {
-              const cropTranslations: Record<string, string> = {
-                Wheat: "गेहूं",
-                Maize: "मक्का",
-                Pulses: "दालें",
-                Oilseeds: "तिलहन",
-                Barley: "जौ",
-                "Pearl Millet": "बाजरा",
-                Sorghum: "ज्वार",
-                "Cluster Bean": "ग्वार",
-                "Moth Bean": "मोठ",
-                Sesame: "तिल",
-                Coconut: "नारियल",
-                Arecanut: "सुपारी",
-                "Black Pepper": "काली मिर्च",
-                Cardamom: "इलायची",
-                Coffee: "कॉफी",
-                Chickpea: "चना",
-                Mustard: "सरसों",
-                Lentil: "मसूर",
-                "Drought-resistant Rice": "सूखा-प्रतिरोधी चावल",
-              };
-              return cropTranslations[crop] || crop;
-            });
-
-          regionBasedRecommendations.notRecommendedCrops =
-            regionBasedRecommendations.notRecommendedCrops.map((crop) => {
-              const cropTranslations: Record<string, string> = {
-                "Traditional Rice": "पारंपरिक चावल",
-                Sugarcane: "गन्ना",
-                Cotton: "कपास",
-              };
-              return cropTranslations[crop] || crop;
-            });
-        }
-
-        const fallbackPredictions: PredictionData = {
-          rainfallPrediction:
-            normalizedLanguage === "en"
-              ? regionBasedRecommendations.rainfallPrediction
-              : regionBasedRecommendations.rainfallPrediction.replace(
-                  "expected annually",
-                  "वार्षिक अपेक्षित",
-                ),
-          waterAvailability:
-            normalizedLanguage === "en"
-              ? regionBasedRecommendations.waterAvailability
-              : "भूजल स्तर में मध्यम गिरावट की उम्मीद है",
-          recommendedCrops: regionBasedRecommendations.recommendedCrops,
-          notRecommendedCrops: regionBasedRecommendations.notRecommendedCrops,
-          sustainabilityScore: 55 + Math.floor(Math.random() * 30),
-          potentialWaterSavings: `${35 + Math.floor(Math.random() * 15)}%`,
-          irrigationRecommendation:
-            normalizedLanguage === "en"
-              ? "Drip irrigation system with soil moisture sensors"
-              : "मिट्टी की नमी संवेदकों के साथ ड्रिप सिंचाई प्रणाली",
-        };
+        const fallbackPredictions = buildDeterministicPredictions(farmData);
 
         setPredictions(fallbackPredictions);
-
-        // Update water usage data
-        const farmSizeNum = parseInt(farmData.farmSize) || 5;
-        const baseRiceUsage = 800 * farmSizeNum;
-        const baseWheatUsage = 400 * farmSizeNum;
-
-        const savingsPercent =
-          parseInt(fallbackPredictions.potentialWaterSavings) || 35;
-        const savingsFactor = (100 - savingsPercent) / 100;
-
-        const newWaterData = [
-          {
-            name: normalizedLanguage === "en" ? "Rice" : "चावल",
-            current: baseRiceUsage,
-            recommended: Math.floor(baseRiceUsage * savingsFactor),
-          },
-          {
-            name: normalizedLanguage === "en" ? "Wheat" : "गेहूं",
-            current: baseWheatUsage,
-            recommended: Math.floor(baseWheatUsage * savingsFactor),
-          },
-          {
-            name: normalizedLanguage === "en" ? "Total" : "कुल",
-            current: baseRiceUsage + baseWheatUsage,
-            recommended:
-              Math.floor(baseRiceUsage * savingsFactor) +
-              Math.floor(baseWheatUsage * savingsFactor),
-          },
-        ];
-
-        setWaterData(newWaterData);
+        setWaterData(
+          buildWaterDataFromFarm(
+            farmData,
+            parseInt(fallbackPredictions.potentialWaterSavings),
+          ),
+        );
         setHasGeneratedReport(true);
 
         toast.info(
@@ -1251,7 +1336,7 @@ const Reports: React.FC<ReportsProps> = ({
                 id="crops"
                 value={farmData.cropTypes.join(", ")}
                 onChange={(value) =>
-                  setFarmData({ ...farmData, cropTypes: value.split(", ") })
+                  setFarmData({ ...farmData, cropTypes: parseCropInput(value) })
                 }
                 label={activeContent.cropTypes}
                 language={normalizedLanguage}
@@ -1264,7 +1349,7 @@ const Reports: React.FC<ReportsProps> = ({
                     onValueChange={(value) =>
                       setFarmData({ ...farmData, soilType: value })
                     }
-                    defaultValue={farmData.soilType}
+                    value={farmData.soilType}
                   >
                     <SelectTrigger className="flex-1 rounded-r-none">
                       <SelectValue placeholder={farmData.soilType} />
@@ -1364,7 +1449,7 @@ const Reports: React.FC<ReportsProps> = ({
                     onValueChange={(value) =>
                       setFarmData({ ...farmData, fertilizerType: value })
                     }
-                    defaultValue={farmData.fertilizerType}
+                    value={farmData.fertilizerType}
                   >
                     <SelectTrigger className="flex-1 rounded-r-none">
                       <SelectValue
@@ -1439,7 +1524,7 @@ const Reports: React.FC<ReportsProps> = ({
                     onValueChange={(value) =>
                       setFarmData({ ...farmData, harvestSeason: value })
                     }
-                    defaultValue={farmData.harvestSeason}
+                    value={farmData.harvestSeason}
                   >
                     <SelectTrigger className="flex-1 rounded-r-none">
                       <SelectValue
