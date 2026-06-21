@@ -87,7 +87,7 @@ const AiAdviceWidget: React.FC<AiAdviceWidgetProps> = ({ language }) => {
     setIsLoading(true);
     
     try {
-      const response = await processVoiceQuery(query, normalizedLanguage);
+      const response = await processVoiceQuery(query, normalizedLanguage, 'direct');
       
       if (response.error) {
         toast.error(response.error);
